@@ -25,14 +25,14 @@ def visualize_all_bboxes():
     """
     從 bboxes.json 讀出所有頁面的 bbox，
     把每張 base_slide/<ID>.png 上的 bbox 畫成綠色，
-    輸出到 ./test/debug_<ID>.png
+    輸出到 ./bbox_slide/<ID>.png
     """
     db = load_bbox_db(BBOX_JSON)
     if not db:
         print(f"⚠ {BBOX_JSON} 是空的或不存在，沒有任何 bbox 可以顯示。")
         return
 
-    os.makedirs("./test", exist_ok=True)
+    os.makedirs("./bbox_slide", exist_ok=True)
 
     print(f"🔍 從 {BBOX_JSON} 中讀出 {len(db)} 個 page 的 bbox 設定")
 
@@ -53,8 +53,8 @@ def visualize_all_bboxes():
             x1, y1, x2, y2 = bbox
             draw.rectangle([x1, y1, x2, y2], outline="green", width=3)
 
-        out_name = f"debug_{img_id}.png"
-        out_path = os.path.join("./test", out_name)
+        out_name = f"{img_id}.png"
+        out_path = os.path.join("./bbox_slide", out_name)
         debug_img.save(out_path)
         print(f"✅ 已輸出：{out_path}")
 
@@ -87,7 +87,7 @@ def main():
         "--out",
         type=str,
         default=None,
-        help="輸出圖片檔名（預設：在 ./test/ 輸出 debug_<ID>.png）",
+        help="輸出圖片檔名（預設：在 ./bbox_slide/ 輸出 debug_<ID>.png）",
     )
     parser.add_argument(
         "-s",
@@ -147,13 +147,13 @@ def main():
     # 把這次指定的新 bbox 畫成紅色
     draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
 
-    # 輸出檔名：預設 ./test/debug_<ID>.png
-    os.makedirs("./test", exist_ok=True)
+    # 輸出檔名：預設 ./bbox_slide/<ID>.png
+    os.makedirs("./bbox_slide", exist_ok=True)
     if args.out:
         out_name = args.out
     else:
-        out_name = f"debug_{args.filename}.png"
-    out_path = os.path.join("./test", out_name)
+        out_name = f"{args.filename}.png"
+    out_path = os.path.join("./bbox_slide", out_name)
     debug_img.save(out_path)
     print(f"✅ 已輸出 debug 圖：{out_path}")
 
