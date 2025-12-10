@@ -11,6 +11,30 @@
 
 ---
 
+## view_box.py
+- **用途**：在簡報底圖上視覺化與管理 bounding box，並寫入 `bboxes.json`。
+- **兩大功能**：
+
+  1. **單次標註與存檔**
+     - 輸入：
+       - 圖片 ID（只給數字，例如 `011`，腳本會讀 `base_slide/011.png`）
+       - 四個座標 `x1 y1 x2 y2`
+     - 行為：
+       - 在該圖上畫出新的紅色 bbox。
+       - 同時把同一頁已存在於 `bboxes.json` 的 bbox 以綠色畫出。
+       - 輸出 debug 圖到 `./test/debug_<ID>.png`。
+       - 若加上 `-s / --save`，會將這個 bbox 寫入 `bboxes.json`，在該頁下一個可用 index 底下新增。
+
+  2. **檢視所有已標註 bbox（-v 模式）**
+     - 讀取 `bboxes.json`，把所有頁面與其 bounding boxes 畫在對應的 `base_slide/<ID>.png` 上（通常用綠色框）。
+     - 可用於快速檢查目前哪些頁面已標註、框的位置是否合理。
+
+- **典型用途**：
+  - 手動標註簡報中可以放 MagicBrush 小圖的位置。
+  - 視覺化檢查 `bboxes.json` 是否正確，避免貼圖跑版。
+  
+---
+
 ## build_complete_slide.py
 - **用途**：把 MagicBrush 資料集的 source/target/mask 小圖貼到簡報底圖上，產生訓練用的完整 slide 圖片與標註。
 - **輸入**：
@@ -35,6 +59,7 @@
     - `-n / --num`：每個 MagicBrush id 生成幾張 sample
     - `-i / --id`：只用指定 MagicBrush id
     - `-ie / --id-exclude`：排除某些 MagicBrush 圖片 ID
+
   - 從 MagicBrush meta 讀取 `instruction` 填入 `prompt`。
   - 若預計輸出的檔名已存在（檔案或 meta 中），自動跳過，避免覆蓋與重複。
 
@@ -135,26 +160,4 @@
   - `debug_clipseg_mask.png`：CLIPSeg 產生的最終 mask。
   - `final_result.png`：PowerPaint 完成 inpainting 後的成品。
 
----
 
-## view_box.py
-- **用途**：在簡報底圖上視覺化與管理 bounding box，並寫入 `bboxes.json`。
-- **兩大功能**：
-
-  1. **單次標註與存檔**
-     - 輸入：
-       - 圖片 ID（只給數字，例如 `011`，腳本會讀 `base_slide/011.png`）
-       - 四個座標 `x1 y1 x2 y2`
-     - 行為：
-       - 在該圖上畫出新的紅色 bbox。
-       - 同時把同一頁已存在於 `bboxes.json` 的 bbox 以綠色畫出。
-       - 輸出 debug 圖到 `./test/debug_<ID>.png`。
-       - 若加上 `-s / --save`，會將這個 bbox 寫入 `bboxes.json`，在該頁下一個可用 index 底下新增。
-
-  2. **檢視所有已標註 bbox（-v 模式）**
-     - 讀取 `bboxes.json`，把所有頁面與其 bounding boxes 畫在對應的 `base_slide/<ID>.png` 上（通常用綠色框）。
-     - 可用於快速檢查目前哪些頁面已標註、框的位置是否合理。
-
-- **典型用途**：
-  - 手動標註簡報中可以放 MagicBrush 小圖的位置。
-  - 視覺化檢查 `bboxes.json` 是否正確，避免貼圖跑版。
