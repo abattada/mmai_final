@@ -210,6 +210,13 @@ def main():
         help="簡報頁 ID，例如 001（會讀 base_slide/001.png）",
     )
     parser.add_argument(
+        "-pe",
+        "--photo-exclude",
+        type=str,
+        default="",
+        help="排除某些 base slide page id（逗號分隔），如果 -p 在這裡面就直接跳過不做。",
+    )
+    parser.add_argument(
         "-n",
         "--num",
         type=int,
@@ -226,13 +233,6 @@ def main():
     parser.add_argument(
         "-ie",
         "--id-exclude",
-        type=str,
-        default="",
-        help="排除某些 base slide page id（逗號分隔），如果 -p 在這裡面就直接跳過不做。",
-    )
-    parser.add_argument(
-        "-pe",
-        "--photo-exclude",
         type=str,
         default="",
         help="排除某些 MagicBrush 圖片 id（逗號分隔，例如：'9,327726'）。",

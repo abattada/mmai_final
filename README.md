@@ -31,10 +31,10 @@
   - 依 `bboxes.json` 在指定頁面的框內，隨機決定貼圖位置與縮放。
   - 支援參數：
     - `-p / --page`：指定 base slide ID（例如 `001`）
+    - `-pe / --photo-exclude`：排除某些 base slide 頁面 
     - `-n / --num`：每個 MagicBrush id 生成幾張 sample
     - `-i / --id`：只用指定 MagicBrush id
-    - `-ie / --id-exclude`：排除某些 base slide 頁面 ID
-    - `-pe / --photo-exclude`：排除某些 MagicBrush 圖片 ID
+    - `-ie / --id-exclude`：排除某些 MagicBrush 圖片 ID
   - 從 MagicBrush meta 讀取 `instruction` 填入 `prompt`。
   - 若預計輸出的檔名已存在（檔案或 meta 中），自動跳過，避免覆蓋與重複。
 
