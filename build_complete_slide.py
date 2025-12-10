@@ -10,6 +10,7 @@ from PIL import Image
 # 路徑設定
 BASE_SLIDE_DIR = "base_slide"
 MAGIC_IMG_DIR = "./magicbrush_converted/images"
+MAGIC_META_DIR = "./magicbrush_converted/meta"
 
 OUT_TRAIN_DIR = "./complete_slide/train"
 OUT_DEV_DIR = "./complete_slide/dev"
@@ -169,6 +170,34 @@ def normalize_filter_id(raw: str) -> str:
     return str(int(m.group(1)))
 
 
+def parse_id_set(raw: str) -> set:
+    """
+    把像 "001,002, 003" 這種字串轉成 {"001","002","003"}，
+    空字串 -> 空集合。
+    """
+    if not raw:
+        return set()
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def load_instruction(split_name: str, magic_id: str) -> str:
+    """
+    從 ./magicbrush_converted/meta/<split>_<id>_turn1.json 讀取 instruction 當作 prompt。
+    例如：magicbrush_converted/meta/train_327726_turn1.json
+    """
+    meta_filename = f"{split_name}_{magic_id}_turn1.json"
+    meta_path = os.path.join(MAGIC_META_DIR, meta_filename)
+    if not os.path.exists(meta_path):
+        print(f"⚠ 找不到 meta 檔案：{meta_path}，此 id 的 prompt 會設為 None")
+        return None
+
+    data = load_json(meta_path, {})
+    prompt = data.get("instruction", None)
+    if prompt is None:
+        print(f"⚠ {meta_path} 中沒有 'instruction' 欄位，prompt 會設為 None")
+    return prompt
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="在指定簡報頁的 bbox 中隨機塞入 MagicBrush (turn1) 圖片，生成扁平化的 source/target/mask slide。"
@@ -194,11 +223,32 @@ def main():
         default=None,
         help="只使用指定的 MagicBrush id，例如 327726 或 train_327726；不給則所有 id 都做",
     )
+    parser.add_argument(
+        "-ie",
+        "--id-exclude",
+        type=str,
+        default="",
+        help="排除某些 base slide page id（逗號分隔），如果 -p 在這裡面就直接跳過不做。",
+    )
+    parser.add_argument(
+        "-pe",
+        "--photo-exclude",
+        type=str,
+        default="",
+        help="排除某些 MagicBrush 圖片 id（逗號分隔，例如：'9,327726'）。",
+    )
     args = parser.parse_args()
 
     page_id = args.page
     num_per_id = args.num
     filter_id_raw = args.id
+    page_exclude_set = parse_id_set(args.id_exclude)
+    photo_exclude_set = parse_id_set(args.photo_exclude)
+
+    # --- 檢查這個 page 要不要直接被排除 ---
+    if page_id in page_exclude_set:
+        print(f"🚫 page_id={page_id} 在 -ie 排除列表中，這次不做任何輸出，直接結束。")
+        return
 
     base_path = os.path.join(BASE_SLIDE_DIR, f"{page_id}.png")
     if not os.path.exists(base_path):
@@ -214,6 +264,7 @@ def main():
     print(f"🖼 train split MagicBrush id 數量: {len(grouped['train'])}")
     print(f"🖼 dev   split MagicBrush id 數量: {len(grouped['dev'])}")
 
+    # --- 只使用指定 id（如果有給 -i） ---
     if filter_id_raw is not None:
         norm_id = normalize_filter_id(filter_id_raw)
         for split_name in ["train", "dev"]:
@@ -227,16 +278,39 @@ def main():
             )
         print(f"🎯 只使用 id={norm_id}")
 
+    # --- 排除 photo_exclude 中指定的 MagicBrush id ---
+    if photo_exclude_set:
+        for split_name in ["train", "dev"]:
+            before = len(grouped[split_name])
+            for ex_id in list(grouped[split_name].keys()):
+                if ex_id in photo_exclude_set:
+                    grouped[split_name].pop(ex_id, None)
+            after = len(grouped[split_name])
+            if before != after:
+                print(f"🚫 split={split_name}: 根據 -pe 排除了一些 id，剩下 {after} 個 id")
+
     os.makedirs(OUT_TRAIN_DIR, exist_ok=True)
     os.makedirs(OUT_DEV_DIR, exist_ok=True)
 
-    # ✅ meta 結構固定為 { "samples": [ ... ] }
+    # meta 結構固定為 { "samples": [ ... ] }
     train_meta = load_json(TRAIN_META_JSON, {"samples": []})
     dev_meta = load_json(DEV_META_JSON, {"samples": []})
 
-    for split_name, out_dir, meta_obj, meta_path in [
-        ("train", OUT_TRAIN_DIR, train_meta, TRAIN_META_JSON),
-        ("dev", OUT_DEV_DIR, dev_meta, DEV_META_JSON),
+    # 🔹 建立「已存在檔名」集合，避免重複（包含 source/target/mask）
+    def build_existing_name_set(meta_obj):
+        names = set()
+        for s in meta_obj.get("samples", []):
+            for k in ("source", "target", "mask"):
+                if k in s:
+                    names.add(s[k])
+        return names
+
+    train_existing_names = build_existing_name_set(train_meta)
+    dev_existing_names = build_existing_name_set(dev_meta)
+
+    for split_name, out_dir, meta_obj, meta_path, existing_names in [
+        ("train", OUT_TRAIN_DIR, train_meta, TRAIN_META_JSON, train_existing_names),
+        ("dev", OUT_DEV_DIR, dev_meta, DEV_META_JSON, dev_existing_names),
     ]:
         ids_dict = grouped[split_name]
         if not ids_dict:
@@ -249,6 +323,9 @@ def main():
             print(
                 f"  - id={magic_id} ({split_name}), 這個 id 會生成 {num_per_id} 張合成圖"
             )
+
+            # 讀這個 id 對應的 prompt（instruction）
+            prompt = load_instruction(split_name, magic_id)
 
             src_patch = Image.open(paths["source"]).convert("RGBA")
             tgt_patch = Image.open(paths["target"]).convert("RGBA")
@@ -266,31 +343,56 @@ def main():
                 tgt_name = f"{page_id}_{magic_id}_target_{idx_str}.png"
                 mask_name = f"{page_id}_{magic_id}_mask_{idx_str}.png"
 
+                out_source_path = os.path.join(out_dir, src_name)
+                out_target_path = os.path.join(out_dir, tgt_name)
+                out_mask_path = os.path.join(out_dir, mask_name)
+
+                # 🔸 檢查檔名是否已經出現（meta 裡 or 檔案系統）
+                if (
+                    src_name in existing_names
+                    or tgt_name in existing_names
+                    or mask_name in existing_names
+                    or os.path.exists(out_source_path)
+                    or os.path.exists(out_target_path)
+                    or os.path.exists(out_mask_path)
+                ):
+                    print(
+                        f"⚠ 檔名重複，跳過 sample {idx_str}: "
+                        f"{src_name}, {tgt_name}, {mask_name}"
+                    )
+                    continue
+
                 print(
                     f"     🔁 sample {idx_str}: split={split_name}, page={page_id}, id={magic_id}, "
                     f"bbox=({x1},{y1},{x2},{y2})"
                 )
 
+                # source slide
                 slide_source = paste_patch(base_img, src_patch, left, top, new_w, new_h)
-                out_source_path = os.path.join(out_dir, src_name)
                 slide_source.save(out_source_path)
 
+                # target slide
                 slide_target = paste_patch(base_img, tgt_patch, left, top, new_w, new_h)
-                out_target_path = os.path.join(out_dir, tgt_name)
                 slide_target.save(out_target_path)
 
+                # mask slide
                 base_mask = Image.new("L", (W, H), 0)
                 mask_img_res = paste_patch(base_mask, msk_patch, left, top, new_w, new_h)
-                out_mask_path = os.path.join(out_dir, mask_name)
                 mask_img_res.save(out_mask_path)
 
-                # ✅ meta 只存你指定的四個欄位
+                # 更新「已存在檔名」集合
+                existing_names.add(src_name)
+                existing_names.add(tgt_name)
+                existing_names.add(mask_name)
+
+                # meta 只存四個檔名 + bbox + prompt
                 meta_obj["samples"].append(
                     {
                         "source": src_name,
                         "target": tgt_name,
                         "mask": mask_name,
                         "bbox": [x1, y1, x2, y2],
+                        "prompt": prompt,
                     }
                 )
 
