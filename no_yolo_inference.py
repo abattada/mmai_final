@@ -108,8 +108,13 @@ def main(args):
     # -----------------------------
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
         "Sanster/PowerPaint-V1-stable-diffusion-inpainting",
-        torch_dtype=dtype
+        torch_dtype=dtype,
+        safety_checker=None,       # ⬅️ 關掉 NSFW safety checker
     ).to(device)
+
+    # 保險起見，再把屬性清掉一次（有些版本會帶著 safety_checker 物件）
+    pipe.safety_checker = None
+
 
     if args.model_path is not None and args.model_path != "":
         if PeftModel is None:
