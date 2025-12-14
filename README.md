@@ -35,33 +35,71 @@
   
 ---
 
-## build_complete_slide.py
-- **用途**：把 MagicBrush 資料集的 source/target/mask 小圖貼到簡報底圖上，產生訓練用的完整 slide 圖片與標註。
-- **輸入**：
-  - `base_slide/<page>.png`：簡報底圖（例如 `001.png`）
-  - `bboxes.json`：每頁可貼圖的 bounding boxes 設定
-  - `magicbrush_converted/images/`：轉好的 MagicBrush triplets（`train_<_id_>_turn1_source/target/mask.png` 等）
-  - `magicbrush_converted/meta/<split>_<id>_turn1.json`：對應的 instruction，拿來當 prompt
-- **輸出**：
-  - 圖片：
-    - `complete_slide/train/*.png`
-    - `complete_slide/dev/*.png`
-    - 檔名格式：`<page>_<magic_id>_{source|target|mask}_<n>.png`
-  - 標註：
-    - `train_meta.json`
-    - `dev_meta.json`
-    - 結構：`{"samples": [{"source": ..., "target": ..., "mask": ..., "bbox": [x1,y1,x2,y2], "prompt": "..."}]}`  
-- **主要功能**：
-  - 依 `bboxes.json` 在指定頁面的框內，隨機決定貼圖位置與縮放。
-  - 支援參數：
-    - `-p / --page`：指定 base slide ID（例如 `001`）
-    - `-pe / --photo-exclude`：排除某些 base slide 頁面 
-    - `-n / --num`：每個 MagicBrush id 生成幾張 sample
-    - `-i / --id`：只用指定 MagicBrush id
-    - `-ie / --id-exclude`：排除某些 MagicBrush 圖片 ID
+# Slide Editing Dataset & Evaluation Scripts
 
-  - 從 MagicBrush meta 讀取 `instruction` 填入 `prompt`。
-  - 若預計輸出的檔名已存在（檔案或 meta 中），自動跳過，避免覆蓋與重複。
+本文件說明兩個核心腳本：
+
+- `build_slide.py`：從 MagicBrush triplets + 自製簡報背景 + bbox 配置，建出完整的 slide 編輯資料集。
+- `no_yolo_inference.py`：在「已知 bbox（oracle）」的設定下，使用 PowerPaint 做推論與評估，不需要 YOLO。
+
+---
+
+## 1. `build_slide.py`：產生 slide 編輯資料集
+
+### 1.1 功能概述
+
+`build_slide.py` 會：
+
+1. 讀取簡報底圖 `base_slide/*.png`（例如 001.png ~ 075.png）。
+2. 讀取 `bboxes.json` 中，每張簡報上可以放圖片的 bounding boxes。
+3. 讀取 `magicbrush_converted/images/` 中的 MagicBrush turn1 圖片 triplets：
+   - `train_<id>_turn1_source.png`
+   - `train_<id>_turn1_target.png`
+   - `train_<id>_turn1_mask.png`
+   - `dev_<id>_turn1_*` 也是同樣格式
+4. 依照規則，把 MagicBrush 的 patch 隨機貼到簡報上的 bbox 裡，產生：
+   - slide-level **source**（原圖 + 貼上去之前的 patch）
+   - slide-level **target**（原圖 + 編輯後的 patch）
+   - slide-level **mask**（僅標出可編輯區域）
+5. 依照 split 規則切成 train / validation / test，並輸出：
+   - 影像：`dataset/<train|validation|test>/*.png`
+   - 標註：`gt/<train|validation|test>/meta.json`
+
+---
+
+### 1.2 依賴的檔案與目錄結構
+
+執行前應確保以下結構存在（路徑可依實際專案根目錄修正）：
+
+```text
+.
+├── base_slide/
+│   ├── 001.png
+│   ├── 002.png
+│   ├── ...
+│   └── 075.png
+├── magicbrush_converted/
+│   ├── images/
+│   │   ├── train_XXXXX_turn1_source.png
+│   │   ├── train_XXXXX_turn1_target.png
+│   │   ├── train_XXXXX_turn1_mask.png
+│   │   ├── dev_YYYYY_turn1_source.png
+│   │   ├── ...
+│   └── meta/
+│       ├── train_XXXXX_turn1.json
+│       ├── dev_YYYYY_turn1.json
+├── bboxes.json
+├── build_slide.py
+└── （執行後產出）
+    ├── dataset/
+    │   ├── train/
+    │   ├── validation/
+    │   └── test/
+    └── gt/
+        ├── train/meta.json
+        ├── validation/meta.json
+        └── test/meta.json
+
 
 ---
 
