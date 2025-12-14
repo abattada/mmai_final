@@ -108,10 +108,9 @@ def main(args):
     # -----------------------------
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
         "Sanster/PowerPaint-V1-stable-diffusion-inpainting",
-        torch_dtype=dtype,
+        torch_dtype=dtype
     ).to(device)
 
-    # 只有在真的有指定 --model_path 時才會用到 PeftModel
     if args.model_path is not None and args.model_path != "":
         if PeftModel is None:
             raise ImportError(
@@ -121,7 +120,11 @@ def main(args):
         pipe.unet = PeftModel.from_pretrained(pipe.unet, args.model_path)
 
     pipe.set_progress_bar_config(disable=True)
-    pipe.eval()
+
+    # diffusers 的 pipeline 本身沒有 eval()，把內部 module 設成 eval 即可
+    for m in [pipe.unet, pipe.vae, getattr(pipe, "text_encoder", None)]:
+        if m is not None and hasattr(m, "eval"):
+            m.eval()
 
     # -----------------------------
     # Metrics models
