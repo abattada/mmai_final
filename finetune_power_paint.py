@@ -5,7 +5,20 @@ from transformers import (
     AutoProcessor,
     AutoModelForZeroShotObjectDetection,
 )
-from diffusers import StableDiffusionInpaintPipeline
+
+import sys
+import huggingface_hub as _hf
+from huggingface_hub import hf_hub_download as _hf_hub_download
+
+if not hasattr(_hf, "cached_download"):
+    def cached_download(*args, **kwargs):
+        return _hf_hub_download(*args, **kwargs)
+
+    _hf.cached_download = cached_download
+    sys.modules["huggingface_hub"] = _hf
+# ========================================================================
+
+from diffusers import StableDiffusionInpaintPipeline, DDPMScheduler
 from diffusers.utils import load_image
 from PIL import Image, ImageDraw
 import numpy as np

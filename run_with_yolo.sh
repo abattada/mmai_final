@@ -6,7 +6,7 @@
 # 專案根目錄
 ROOT_DIR=/local/abat/mmai/mmai_final
 
-SPLIT=validation   # 想測 train / test 就改這個
+SPLIT=test  #想測 train / test 就改這個
 
 META_PATH=${ROOT_DIR}/gt/${SPLIT}/meta.json
 IMG_DIR=${ROOT_DIR}/dataset/${SPLIT}
@@ -38,7 +38,7 @@ python with_yolo_inference.py \
   --guidance_scale ${GUIDANCE_SCALE} \
   --model_path "${MODEL_PATH}" \
   --save_all \
-  --num_input 20 \
   --seed 211 \
   --with_lora \
-  --split "${SPLIT}"
+  --split "${SPLIT}" \
+  --num_input 1000\
