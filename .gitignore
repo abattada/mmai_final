@@ -4,3 +4,5 @@ magic*
 *.tar*
 yolo_labels*
 gt*
+*result*
+*.zip

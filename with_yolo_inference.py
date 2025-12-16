@@ -1,16 +1,11 @@
-# no_yolo_inference.py
+# with_yolo_inference.py
 """
-NO-YOLO INFERENCE (Oracle Bounding Box Evaluation)
+WITH-YOLO INFERENCE (YOLO bbox + GT mask)
 
-Mask rule (IMPORTANT):
-- bbox defines the spatial region
-- inside bbox:
-    * original mask == 0 (pure black)  -> editable
-    * otherwise                        -> NOT editable
-- outside bbox: NOT editable
-- diffusers convention:
-    * 255 = editable
-    * 0   = keep original
+Pipeline:
+YOLO -> bounding box
+GT mask (from meta.json) -> editable pixels (BLACK = editable)
+PowerPaint (+ optional LoRA) -> edit by prompt
 """
 
 import os
@@ -25,7 +20,22 @@ from PIL import Image
 from torchvision import transforms
 from tqdm import tqdm
 
+# -------------------------------------------------
+# HF compatibility patch (cached_download removal)
+# -------------------------------------------------
+import huggingface_hub
+
+if not hasattr(huggingface_hub, "cached_download"):
+    from huggingface_hub import hf_hub_download
+
+    def cached_download(*args, **kwargs):
+        return hf_hub_download(*args, **kwargs)
+
+    huggingface_hub.cached_download = cached_download
+
+
 from diffusers import StableDiffusionInpaintPipeline
+from ultralytics import YOLO
 
 # Optional PEFT (LoRA)
 try:
@@ -48,7 +58,7 @@ def build_experiment_name(args) -> str:
 
 
 def extract_sample_id(source_filename: str) -> str:
-    # 001_9_source_001.png -> 001_9
+    # e.g. 001_9_source_001.png -> 001_9
     return os.path.basename(source_filename).split("_source_")[0]
 
 
@@ -65,14 +75,14 @@ def save_sample_bundle(
     sample_dir = os.path.join(root, sample_id)
     os.makedirs(sample_dir, exist_ok=True)
 
-    with open(os.path.join(sample_dir, "prompt.txt"), "w", encoding="utf-8") as f:
-        f.write(prompt)
-
     source_slide.save(os.path.join(sample_dir, "source_slide.png"))
     target_slide.save(os.path.join(sample_dir, "target_slide.png"))
     output_slide.save(os.path.join(sample_dir, "output_slide.png"))
     source_crop.save(os.path.join(sample_dir, "source_crop.png"))
     mask_crop.save(os.path.join(sample_dir, "mask_crop.png"))
+
+    with open(os.path.join(sample_dir, "prompt.txt"), "w", encoding="utf-8") as f:
+        f.write(prompt)
 
 
 def paste_crop(slide: Image.Image, crop: Image.Image, bbox):
@@ -104,7 +114,7 @@ def main(args):
     dtype = torch.float16 if device == "cuda" else torch.float32
 
     # -----------------------------
-    # Experiment directory
+    # Output directory
     # -----------------------------
     exp_name = build_experiment_name(args)
     out_root = os.path.join(args.out_dir, exp_name)
@@ -118,9 +128,6 @@ def main(args):
     with open(args.meta_path, "r", encoding="utf-8") as f:
         samples = json.load(f)["samples"]
 
-    # -----------------------------
-    # Optional subsampling
-    # -----------------------------
     if args.num_input is not None and args.num_input < len(samples):
         rng = random.Random(args.seed)
         samples = rng.sample(samples, args.num_input)
@@ -128,19 +135,20 @@ def main(args):
     print(f"[INFO] Running inference on {len(samples)} samples")
 
     # -----------------------------
-    # Decide which samples to save
+    # Decide save set
     # -----------------------------
-    all_sample_ids = [extract_sample_id(s["source"]) for s in samples]
-
+    all_ids = [extract_sample_id(s["source"]) for s in samples]
     if args.save_all:
-        save_ids = set(all_sample_ids)
+        save_ids = set(all_ids)
     else:
         rng = random.Random(args.seed)
-        save_ids = set(
-            rng.sample(all_sample_ids, k=min(args.num_vis, len(all_sample_ids)))
-        )
+        save_ids = set(rng.sample(all_ids, k=min(args.num_vis, len(all_ids))))
 
-    print(f"[INFO] Will save images for {len(save_ids)} samples")
+    # -----------------------------
+    # Load YOLO
+    # -----------------------------
+    print(f"[INFO] Loading YOLO from {args.yolo_pt}")
+    yolo = YOLO(args.yolo_pt)
 
     # -----------------------------
     # Load PowerPaint
@@ -158,7 +166,7 @@ def main(args):
         if not args.model_path:
             raise ValueError("--with_lora requires --model_path")
         if PeftModel is None:
-            raise ImportError("peft is not installed")
+            raise ImportError("peft not installed")
 
         print(f"[INFO] Loading LoRA from {args.model_path}")
         pipe.unet = PeftModel.from_pretrained(
@@ -166,8 +174,6 @@ def main(args):
             args.model_path,
             is_trainable=False,
         )
-    else:
-        print("[INFO] Running WITHOUT LoRA")
 
     for m in [pipe.unet, pipe.vae, getattr(pipe, "text_encoder", None)]:
         if m is not None and hasattr(m, "eval"):
@@ -199,7 +205,7 @@ def main(args):
     # -----------------------------
     # Inference loop
     # -----------------------------
-    for s in tqdm(samples, desc="No-YOLO Inference"):
+    for s in tqdm(samples, desc="With-YOLO (GT mask) Inference"):
         source_path = os.path.join(args.img_dir, s["source"])
         target_path = os.path.join(args.img_dir, s["target"])
         mask_path   = os.path.join(args.img_dir, s["mask"])
@@ -208,26 +214,32 @@ def main(args):
             continue
 
         sample_id = extract_sample_id(s["source"])
+        prompt = s["prompt"]
 
         source_slide = Image.open(source_path).convert("RGB")
         target_slide = Image.open(target_path).convert("RGB")
-        mask_slide   = Image.open(mask_path).convert("L")
-
-        bbox = s["bbox"]
-        prompt = s["prompt"]
+        mask_slide   = Image.open(mask_path).convert("L")  # GT mask
 
         # -------------------------
-        # Crop image
+        # YOLO detect -> bbox
+        # -------------------------
+        yolo_res = yolo(source_slide, conf=args.yolo_conf, verbose=False)[0]
+        if yolo_res.boxes is None or len(yolo_res.boxes) == 0:
+            continue
+
+        boxes  = yolo_res.boxes.xyxy.cpu().numpy()
+        scores = yolo_res.boxes.conf.cpu().numpy()
+        best_i = int(np.argmax(scores))
+        bbox   = boxes[best_i].astype(int).tolist()
+
+        # -------------------------
+        # Crop image + GT mask
         # -------------------------
         source_crop = source_slide.crop(bbox)
-
-        # -------------------------
-        # Build correct diffusers mask
-        # -------------------------
         raw_mask_crop = mask_slide.crop(bbox)
-        raw_np = np.array(raw_mask_crop, dtype=np.uint8)
 
-        # Dataset rule: BLACK (0) = editable
+        # GT rule: BLACK (0) = editable
+        raw_np = np.array(raw_mask_crop, dtype=np.uint8)
         editable = (raw_np == 0)
 
         diffusers_mask_np = np.zeros_like(raw_np, dtype=np.uint8)
@@ -236,7 +248,7 @@ def main(args):
         mask_crop = Image.fromarray(diffusers_mask_np, mode="L")
 
         # -------------------------
-        # Inference
+        # PowerPaint inference
         # -------------------------
         with torch.no_grad():
             out_crop = pipe(
@@ -294,6 +306,8 @@ def main(args):
 
         results.append({
             "sample_id": sample_id,
+            "bbox": bbox,
+            "yolo_conf": float(scores[best_i]),
             "masked_lpips": masked_lpips,
             "clip_score": clip_score,
             "bg_lpips": bg_lpips,
@@ -306,7 +320,7 @@ def main(args):
         clip_i_all.append(clip_i)
 
         # -------------------------
-        # Save images (controlled by save_all / num_vis)
+        # Save
         # -------------------------
         if sample_id in save_ids:
             save_sample_bundle(
@@ -321,9 +335,9 @@ def main(args):
             )
 
     # -----------------------------
-    # Save results
+    # Save summary
     # -----------------------------
-    with open(os.path.join(out_root, "results_no_yolo.json"), "w") as f:
+    with open(os.path.join(out_root, "results_with_yolo.json"), "w") as f:
         json.dump(results, f, indent=2)
 
     m_lpips, s_lpips = compute_mean_std(masked_lpips_all)
@@ -341,7 +355,7 @@ def main(args):
         "clip_i":       {"mean": m_ci,    "std": s_ci},
     }
 
-    with open(os.path.join(out_root, "summary_no_yolo.json"), "w") as f:
+    with open(os.path.join(out_root, "summary_with_yolo.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
     print(f"[DONE] Results saved to {out_root}")
@@ -355,8 +369,11 @@ if __name__ == "__main__":
 
     parser.add_argument("--meta_path", type=str, required=True)
     parser.add_argument("--img_dir", type=str, required=True)
-    parser.add_argument("--out_dir", type=str, default="./no_yolo_results")
+    parser.add_argument("--out_dir", type=str, default="./with_yolo_results")
     parser.add_argument("--split", type=str, required=True)
+
+    parser.add_argument("--yolo_pt", type=str, default="./best/best.pt")
+    parser.add_argument("--yolo_conf", type=float, default=0.25)
 
     parser.add_argument("--model_path", type=str, default=None)
     parser.add_argument("--with_lora", action="store_true")

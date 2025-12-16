@@ -1,34 +1,51 @@
-# 使用 PyPI + 額外的 PyTorch CUDA 來源
-# 這樣 torch / torchvision 會從 CUDA 12.1 的索引抓，其他套件仍從 PyPI 抓
---extra-index-url https://download.pytorch.org/whl/cu121
+# ----------------------------
+# Core deep learning
+# ----------------------------
+torch==2.1.2
+torchvision==0.16.2
+torchaudio==2.1.2
 
-# === PyTorch (GPU) ===
-torch==2.4.0
-torchvision==0.19.0
+# ----------------------------
+# Diffusion / Inpainting
+# ----------------------------
+diffusers==0.24.0
+transformers==4.36.2
+accelerate==0.25.0
+safetensors==0.4.1
 
-# === Hugging Face / Diffusers 生態系 ===
-transformers==4.48.3
-diffusers==0.30.0
-accelerate==0.33.0
-safetensors==0.4.5
-huggingface-hub==0.25.0
-datasets>=2.20.0
-pyarrow>=15.0.0
+# ----------------------------
+# LoRA / PEFT
+# ----------------------------
+peft==0.7.1
 
-# === 影像與數值處理 ===
-Pillow==10.4.0
-numpy==1.26.4
+# ----------------------------
+# YOLO (Ultralytics)
+# ----------------------------
+ultralytics==8.1.0
 
-# === 評估與模型額外套件 ===
+# ----------------------------
+# Metrics
+# ----------------------------
 lpips==0.1.4
+ftfy==6.1.3
+regex==2023.10.3
+tqdm==4.66.1
 
-# OpenAI CLIP（用官方 repo）
+# ----------------------------
+# CLIP (OpenAI)
+# ----------------------------
 git+https://github.com/openai/CLIP.git
 
-# LoRA / PEFT（只有在你要用 --model_path 載入 adapter 時才會用到）
-peft>=0.11,<0.18
+# ----------------------------
+# Image / numeric utils
+# ----------------------------
+pillow==10.1.0
+opencv-python==4.8.1.78
+numpy==1.24.4
+scipy==1.11.4
 
-# === 其他常見相依，列出來比較穩 ===
-requests==2.32.3
-tqdm==4.66.5
-protobuf==5.28.3
+# ----------------------------
+# General utils
+# ----------------------------
+pyyaml==6.0.1
+requests==2.31.0
