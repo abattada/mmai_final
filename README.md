@@ -1,201 +1,95 @@
-# 專案程式與檔案用途說明
+# 專案概觀
 
-## bboxes.json
-- **類型**：標註設定檔（JSON）
-- **用途**：儲存每一張簡報底圖（base slide）的 bounding box 設定。
-- **結構概念**：
-  - 第一層 key：頁面 ID（例如 `"001"`）
-  - 第二層 key：此頁面上第幾個框（`"1"`, `"2"`…）
-  - value：`[x1, y1, x2, y2]`，對應 1280×720 圖片座標。
-- **來源**：由 `view_box.py` 使用 `-s` 參數時寫入／累積。
+本倉庫整理了簡報編輯資料集的建立流程，以及以 PowerPaint 進行「已知 bbox（No-YOLO）」推論與評估的腳本。輸入來源包含 MagicBrush triplets（source/target/mask）與自製的簡報背景與 bounding boxes，輸出為可訓練/評估的 slide-level 影像與標註。
 
----
+## 專案結構速覽
+- `base_slide/`：1280×720 的簡報底圖；`bbox_slide/` 為帶有 bbox 標註的視覺化版本。
+- `bboxes.json`：每張底圖的 bounding box 設定，鍵為頁面 ID，值為 `{"1": [x1, y1, x2, y2], ...}`。
+- `magicbrush_converted/`：`download_magicbrush.py` 轉出的 MagicBrush 影像與 meta（`images/`、`meta/`）。
+- `dataset/`、`gt/`：`build_slide.py` 產出的 slide-level 影像與對應的 `meta.json`。
+- `requirements.txt`：推論與轉檔所需套件（torch/diffusers/transformers 等）。
+- 主要腳本：`download_magicbrush.py`、`view_box.py`、`build_slide.py`、`fill_prompt.py`、`json_to_txt.py`、`no_yolo_inference.py`，以及測試腳本 `test_no_yolo.sh`、`test_power_paint.py`。
 
-## view_box.py
-- **用途**：在簡報底圖上視覺化與管理 bounding box，並寫入 `bboxes.json`。
-- **兩大功能**：
+## 環境安裝
+在虛擬環境中安裝依賴：
+```bash
+pip install -r requirements.txt
+```
 
-  1. **單次標註與存檔**
-     - 輸入：
-       - 圖片 ID（只給數字，例如 `011`，腳本會讀 `base_slide/011.png`）
-       - 四個座標 `x1 y1 x2 y2`
-     - 行為：
-       - 在該圖上畫出新的紅色 bbox。
-       - 同時把同一頁已存在於 `bboxes.json` 的 bbox 以綠色畫出。
-       - 輸出 debug 圖到 `./test/debug_<ID>.png`。
-       - 若加上 `-s / --save`，會將這個 bbox 寫入 `bboxes.json`，在該頁下一個可用 index 底下新增。
+## 工作流程
+以下步驟將 MagicBrush 資料轉成 slide-level 資料集，並進行 No-YOLO 推論。
 
-  2. **檢視所有已標註 bbox（-v 模式）**
-     - 讀取 `bboxes.json`，把所有頁面與其 bounding boxes 畫在對應的 `base_slide/<ID>.png` 上（通常用綠色框）。
-     - 可用於快速檢查目前哪些頁面已標註、框的位置是否合理。
+### 1. 下載並整理 MagicBrush 資料
+使用 `download_magicbrush.py` 透過 `datasets` 載入 `osunlp/MagicBrush`，轉存為圖片與 meta：
+```bash
+python download_magicbrush.py  # 輸出至 magicbrush_converted/images 與 magicbrush_converted/meta
+```
+檔名格式為 `<split>_<img_id>_turn<idx>_{source|mask|target}.png`，meta 會寫入對應的 instruction（prompt）。程式預設 `MAX_SAMPLES_PER_SPLIT = None` 轉出全部，可視需求在檔案內調整。
 
-- **典型用途**：
-  - 手動標註簡報中可以放 MagicBrush 小圖的位置。
-  - 視覺化檢查 `bboxes.json` 是否正確，避免貼圖跑版。
-  
----
+完成後可用 `count_images.py` 檢查轉檔數量與完整性：
+```bash
+python count_images.py --root ./magicbrush_converted
+```
 
-# Slide Editing Dataset & Evaluation Scripts
+### 2. 建立/檢視 bounding boxes
+`view_box.py` 協助在 `base_slide/<ID>.png` 上標註與檢查 bbox，結果存入 `bboxes.json`。
+- 單次新增並輸出除錯圖：
+  ```bash
+  python view_box.py 011 100 200 300 350 -s  # 在 011.png 上新增一個 bbox 並存檔
+  ```
+- 檢視所有頁面的標註（畫在對應底圖上）：
+  ```bash
+  python view_box.py -v
+  ```
+除錯輸出會放在 `./test/debug_<ID>.png`，`-s/--save` 會將新框寫入 `bboxes.json`。
 
-本文件說明兩個核心腳本：
+### 3. 產生 slide 編輯資料集
+`build_slide.py` 根據 `bboxes.json` 與 MagicBrush turn1 圖片，將 patch 隨機貼入每個 bbox，產生 slide-level source/target/mask 以及 `gt/<split>/meta.json`。
+```bash
+python build_slide.py \
+  --num 1 \          # 每個 MagicBrush patch 在每張底圖生成張數
+  --workers 4        # 平行處理 thread 數
+```
+- 輸出影像：`dataset/train|validation|test/*.png`
+- 標註：`gt/train|validation|test/meta.json`（含 `source`/`target`/`mask` 檔名、`bbox`、`prompt`）。
+- 使用 `--test-run` 可快速產生最小樣本。
 
-- `build_slide.py`：從 MagicBrush triplets + 自製簡報背景 + bbox 配置，建出完整的 slide 編輯資料集。
-- `no_yolo_inference.py`：在「已知 bbox（oracle）」的設定下，使用 PowerPaint 做推論與評估，不需要 YOLO。
+### 4. 補齊 prompt（若 meta 缺少 instruction）
+`fill_prompt.py` 會讀取 `train_meta.json`、`dev_meta.json`，並從 `magicbrush_converted/meta/<split>_<id>_turn1.json` 補上缺漏的 `prompt` 欄位：
+```bash
+python fill_prompt.py
+```
 
----
+### 5. 轉成 YOLO bbox 標註
+`json_to_txt.py` 會將 `gt/<split>/meta.json` 內的 `bbox` 轉換成 YOLO 格式，分別為 source/target/mask 各輸出一個 `.txt` 標註檔至 `gt/<split>/label/`：
+```bash
+python json_to_txt.py
+```
 
-## 1. `build_slide.py`：產生 slide 編輯資料集
+### 6. No-YOLO Oracle 推論與評估
+`no_yolo_inference.py` 會讀取 `gt/<split>/meta.json`，對每筆樣本以「已知 bbox」裁切成 patch，將 patch 與 mask 丟入 PowerPaint，並把生成結果貼回原圖。程式同時計算：
+- **Masked LPIPS**：只針對遮罩範圍量測編輯強度。
+- **CLIP score**：生成區塊與文字指令的相似度。
+- **Background LPIPS**：非遮罩背景維持程度。
+- **CLIP-I**：整張輸出與 GT 的影像相似度。
 
-### 1.1 功能概述
+基本使用範例（對 validation split）：
+```bash
+python no_yolo_inference.py \
+  --meta_path gt/validation/meta.json \
+  --img_dir dataset/validation \
+  --out_dir no_yolo_results/validation \
+  --steps 30 \
+  --guidance_scale 7.5 \
+  --num_vis 8              # 隨機存 8 個可視化
+```
+- `--model_path <peft_adapter>` 可選擇載入 LoRA（需要已安裝 `peft`）。
+- 會輸出 `results_no_yolo.json`（逐樣本結果）與 `summary_no_yolo.json`（平均/標準差），可視化檔案放在 `out_dir/vis/`。
+- `--crop_size` 決定計算指標時重採樣的邊長；`--seed` 控制可視化抽樣的隨機性。
 
-`build_slide.py` 會：
+`shell` 腳本 `test_no_yolo.sh` 示範了設定環境變數並呼叫上述指令，可依需求調整 `SPLIT`/`MODEL_PATH`/推論參數後直接執行。
 
-1. 讀取簡報底圖 `base_slide/*.png`（例如 001.png ~ 075.png）。
-2. 讀取 `bboxes.json` 中，每張簡報上可以放圖片的 bounding boxes。
-3. 讀取 `magicbrush_converted/images/` 中的 MagicBrush turn1 圖片 triplets：
-   - `train_<id>_turn1_source.png`
-   - `train_<id>_turn1_target.png`
-   - `train_<id>_turn1_mask.png`
-   - `dev_<id>_turn1_*` 也是同樣格式
-4. 依照規則，把 MagicBrush 的 patch 隨機貼到簡報上的 bbox 裡，產生：
-   - slide-level **source**（原圖 + 貼上去之前的 patch）
-   - slide-level **target**（原圖 + 編輯後的 patch）
-   - slide-level **mask**（僅標出可編輯區域）
-5. 依照 split 規則切成 train / validation / test，並輸出：
-   - 影像：`dataset/<train|validation|test>/*.png`
-   - 標註：`gt/<train|validation|test>/meta.json`
-
----
-
-### 1.2 依賴的檔案與目錄結構
-
-執行前應確保以下結構存在（路徑可依實際專案根目錄修正）：
-
-```text
-.
-├── base_slide/
-│   ├── 001.png
-│   ├── 002.png
-│   ├── ...
-│   └── 075.png
-├── magicbrush_converted/
-│   ├── images/
-│   │   ├── train_XXXXX_turn1_source.png
-│   │   ├── train_XXXXX_turn1_target.png
-│   │   ├── train_XXXXX_turn1_mask.png
-│   │   ├── dev_YYYYY_turn1_source.png
-│   │   ├── ...
-│   └── meta/
-│       ├── train_XXXXX_turn1.json
-│       ├── dev_YYYYY_turn1.json
-├── bboxes.json
-├── build_slide.py
-└── （執行後產出）
-    ├── dataset/
-    │   ├── train/
-    │   ├── validation/
-    │   └── test/
-    └── gt/
-        ├── train/meta.json
-        ├── validation/meta.json
-        └── test/meta.json
-
-
----
-
-## count_images.py
-- **用途**：統計專案中各影像資料夾的圖片數量，作為資料檢查用的小工具。
-- **典型行為**（依實作而定，預期功能）：
-  - 計算例如：
-    - `magicbrush_converted/images/` 下 train/dev 各自的 source/target/mask 數量。
-    - `complete_slide/train` 與 `complete_slide/dev` 中圖檔數量。
-  - 在終端機印出每個目錄與對應的檔案數，幫助確認轉檔是否完整。
-
----
-
-## download_magicbrush.py
-- **用途**：下載並整理 MagicBrush 資料集。
-- **主要功能**：
-  - 使用 `datasets` 的 `load_dataset("osunlp/MagicBrush", ...)` 載入資料。
-  - 將其中的 `source_img` / `target_img` / `mask_img` 轉成實際的 `.png` 圖檔。
-  - 搭配對應的 meta（包含 `instruction`），存到：
-    - `magicbrush_converted/images/`
-    - `magicbrush_converted/meta/`
-- **備註**：
-  - 初期版本可能只處理 train 前幾筆樣本，之後擴充成可轉整個 train/dev split。
-
----
-
-## fill_prompt.py
-- **用途**：補齊 `train_meta.json` / `dev_meta.json` 中缺少 `prompt` 欄位的樣本。
-- **輸入**：
-  - `train_meta.json`、`dev_meta.json`
-  - `magicbrush_converted/meta/<split>_<id>_turn1.json`
-- **邏輯**：
-  - 逐一掃過 meta 中的 `samples`：
-    - 若 sample 已有 `prompt` 且非空字串 → 保留原值。
-    - 若沒有 `prompt`：
-      - 由 `source` 檔名解析出 MagicBrush 圖片 ID。
-      - 讀取對應的 `magicbrush_converted/meta/<split>_<id>_turn1.json`。
-      - 將裡面的 `"instruction"` 填入 `prompt` 欄位。
-  - 最後覆寫更新後的 meta 檔案。
-
----
-
-## json_to_txt.py
-- **用途**：把 `train_meta.json` / `dev_meta.json` 裡的 bbox 標註轉成 YOLO 格式的 `.txt` 標註檔。
-- **輸入**：
-  - `train_meta.json`、`dev_meta.json`
-  - 對應的影像資料夾：
-    - `complete_slide/train/`
-    - `complete_slide/dev/`
-- **輸出**：
-  - `yolo_labels/train/*.txt`
-  - `yolo_labels/dev/*.txt`
-  - 每張圖一個 `.txt`，檔名與影像檔名相同（副檔名改 `.txt`）。
-- **YOLO 格式**：
-  - 單一類別（預設 class id = 0）：
-    - `0 x_center y_center width height`
-  - 所有座標均為相對值（0–1），由原始 bbox `[x1, y1, x2, y2]` 及圖片尺寸（1280×720）換算而來。
-- **可調整項目**（依實作參數）：
-  - 使用 `target` 或 `source` 當 YOLO 的影像來源。
-  - 類別編號（class id）。
-
----
-
-## requirements.txt
-- **用途**：記錄專案所需的 Python 套件與版本，方便建立一致的虛擬環境。
-- **內容大致包含**（實際以檔案為準）：
-  - `torch`, `torchvision`
-  - `transformers`
-  - `diffusers`
-  - `accelerate`
-  - `safetensors`
-  - `huggingface-hub`
-  - `Pillow`
-  - `numpy`
-  - `datasets`
-  - 以及其他通用工具套件（如 `tqdm`, `requests` 等）。
-- **使用方式**：
-  - 在虛擬環境中執行：
-    ```bash
-    pip install -r requirements.txt
-    ```
-
----
-
-## test_power_paint.py
-- **用途**：實驗用腳本，將簡報截圖中的指定區域自動找出並用 PowerPaint 做 inpainting。
-- **主要流程**：
-  1. 讀取一張輸入圖片（簡報截圖，例如 `base.png`）。
-  2. 使用 **Grounding DINO** 根據文字描述（如 `"image of sky and grass"`）找到對應 bounding box。
-  3. 在該 bounding box 中，使用 **CLIPSeg** 根據文字（如 `"grass land"`）預測更細緻的 mask。
-  4. 將得到的 mask + 原圖縮放到適合 PowerPaint 的大小，送入  
-     `StableDiffusionInpaintPipeline`（`Sanster/PowerPaint-V1-stable-diffusion-inpainting`）。
-  5. 產生新圖後再放回原解析度，疊回原圖中 mask 指定位置。
-- **輸出**：
-  - `debug_groundingdino_box.png`：畫出 Grounding DINO 的 bounding box。
-  - `debug_clipseg_mask.png`：CLIPSeg 產生的最終 mask。
-  - `final_result.png`：PowerPaint 完成 inpainting 後的成品。
-
+## 其他工具
+- `test_power_paint.py`：示範結合 Grounding DINO + CLIPSeg + PowerPaint，在指定簡報截圖上自動找框與 inpaint，會輸出除錯框 (`debug_groundingdino_box.png`)、mask (`debug_clipseg_mask.png`) 與成品 (`final_result.png`)。
+- `view_box.py -v` 生成的標註視覺化可協助人工檢查框位置是否合理。
 
